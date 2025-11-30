@@ -1,5 +1,5 @@
 use crate::debugger_command::DebuggerCommand;
-use crate::inferior::Inferior;
+use crate::inferior::{Inferior, Status};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 
@@ -32,17 +32,64 @@ impl Debugger {
         loop {
             match self.get_next_command() {
                 DebuggerCommand::Run(args) => {
+                    if !self.inferior.is_none() {
+                        self.inferior.as_mut().unwrap().kill();
+                    }
+
                     if let Some(inferior) = Inferior::new(&self.target, &args) {
                         // Create the inferior
                         self.inferior = Some(inferior);
-                        // TODO (milestone 1): make the inferior run
-                        // You may use self.inferior.as_mut().unwrap() to get a mutable reference
-                        // to the Inferior object
+                        // Make the inferior run
+                        match self.inferior.as_ref().unwrap().cont() {
+                            Ok(status) => match status {
+                                Status::Exited(exit_code) => {
+                                    println!("Child exited (status {})", exit_code);
+                                    self.inferior = None;
+                                }
+                                Status::Signaled(signal) => {
+                                    println!("Child killed by signal {:?}", signal);
+                                    self.inferior = None;
+                                }
+                                Status::Stopped(signal, rip) => {
+                                    println!("Child stopped (signal {:?}) at address {:#x}", signal, rip);
+                                }
+                            }
+                            Err(e) => {
+                                println!("Error continuing inferior: {}", e);
+                            }
+                        }
                     } else {
                         println!("Error starting subprocess");
                     }
                 }
+                DebuggerCommand::Continue => {
+                    if self.inferior.is_none() {
+                        println!("Please run the process first");
+                        continue;
+                    }
+                    match self.inferior.as_ref().unwrap().cont() {
+                        Ok(status) => match status {
+                            Status::Exited(exit_code) => {
+                                println!("Child exited (status {})", exit_code);
+                                self.inferior = None;
+                            }
+                            Status::Signaled(signal) => {
+                                println!("Child killed by signal {:?}", signal);
+                                self.inferior = None;
+                            }
+                            Status::Stopped(signal, rip) => {
+                                println!("Child stopped (signal {:?}) at address {:#x}", signal, rip);
+                            }
+                        }
+                        Err(e) => {
+                            println!("Error continuing inferior: {}", e);
+                        }
+                    }
+                }
                 DebuggerCommand::Quit => {
+                    if !self.inferior.is_none() {
+                        self.inferior.as_mut().unwrap().kill();
+                    }
                     return;
                 }
             }
