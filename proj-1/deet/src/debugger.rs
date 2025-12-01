@@ -89,9 +89,34 @@ impl Debugger {
                     return;
                 }
                 DebuggerCommand::Break(args) => {
-                    let address = self.parse_address(args.as_str()).unwrap();
-                    println!("Set breakpoint {} at {}", self.breakpoints.len(), address);
-                    self.breakpoints.push(address);
+                    if args.chars().next() == Some('*') {
+                        let sub_string: String = args.chars().skip(1).collect();
+                        let address = self.parse_address(sub_string.as_str()).unwrap();
+                        println!("Set breakpoint {} at {}", self.breakpoints.len(), address);
+                        self.breakpoints.push(address);
+                    }
+                    match args.parse::<usize>() {
+                        Ok(line) => {
+                            let address = self.debug_data.get_addr_for_line(None, line);
+                            if !address.is_none() {
+                                println!("Set breakpoint {} at {}", self.breakpoints.len(), address.unwrap());
+                                self.breakpoints.push(address.unwrap());
+                            }
+                            else {
+                                println!("Unrecognized line number {} for breakpoint", line);
+                            }
+                        }
+                        Err(e) => {
+                            let address = self.debug_data.get_addr_for_function(None, &args);
+                            if !address.is_none() {
+                                println!("Set breakpoint {} at {}", self.breakpoints.len(), address.unwrap());
+                                self.breakpoints.push(address.unwrap());
+                            }
+                            else {
+                                println!("Unrecognized function name {} for breakpoint", args);
+                            }
+                        }
+                    }
                 }
             }
         }

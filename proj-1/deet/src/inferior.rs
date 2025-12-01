@@ -115,12 +115,12 @@ impl Inferior {
 
         if self.hashmap.contains_key(&(instruction_ptr - 1)) {
             let address = instruction_ptr - 1;
-            self.write_byte(address, self.hashmap.get(&address).unwrap().orig_byte);
+            self.write_byte(address, self.hashmap.get(&address).unwrap().orig_byte)?;
             regs.rip = (instruction_ptr - 1) as u64;
-            ptrace::setregs(self.pid(), regs);
+            ptrace::setregs(self.pid(), regs)?;
             ptrace::step(self.pid(), None)?;
-            self.wait(None);
-            self.write_byte(address, 0xcc);
+            self.wait(None)?;
+            self.write_byte(address, 0xcc)?;
         }
 
         ptrace::cont(self.pid(), None)?;
