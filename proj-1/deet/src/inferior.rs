@@ -2,10 +2,13 @@ use nix::sys::ptrace;
 use nix::sys::signal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
+use std::convert::TryInto;
+use std::intrinsics::write_bytes;
 use std::process::{Command, Child};
 use std::os::unix::process::CommandExt;
 use crate::dwarf_data::{DwarfData};
 use std::mem::size_of;
+use std::collections::HashMap;
 
 
 pub enum Status {
@@ -32,11 +35,18 @@ fn child_traceme() -> Result<(), std::io::Error> {
 
 pub struct Inferior {
     child: Child,
-    breakpoints: Vec<usize>
+    breakpoints: Vec<usize>,
+    hashmap: HashMap<usize, Breakpoint>
 }
 
 fn align_addr_to_word(addr: usize) -> usize {
     addr & (-(size_of::<usize>() as isize) as usize)
+}
+
+#[derive(Clone)]
+struct Breakpoint {
+    addr: usize,
+    orig_byte: u8,
 }
 
 impl Inferior {
@@ -54,12 +64,13 @@ impl Inferior {
         
         match cmd.spawn() {
             Ok(child) => {
-                let mut inferior = Inferior { child: child, breakpoints: breakpoints.clone()};
+                let mut inferior = Inferior { child: child, breakpoints: breakpoints.clone(), hashmap: HashMap::new()};
                 // Wait for the child to stop with SIGTRAP
                 match inferior.wait(None) {
                     Ok(Status::Stopped(signal::Signal::SIGTRAP, _)) => {
                         for breakpoint in breakpoints {
-                            inferior.write_byte(breakpoint.clone(), 0xcc);
+                            let orig_byte = inferior.write_byte(breakpoint.clone(), 0xcc).ok()?;
+                            inferior.hashmap.insert(*breakpoint, Breakpoint { addr: *breakpoint, orig_byte });
                         }
                         Some(inferior)
                     }
@@ -97,7 +108,21 @@ impl Inferior {
         nix::unistd::Pid::from_raw(self.child.id() as i32)
     }
 
-    pub fn cont(&self) -> Result<Status, nix::Error>{
+    pub fn cont(&mut self) -> Result<Status, nix::Error>{
+        let mut regs = ptrace::getregs(self.pid())?;
+        // println!("%rip register: {:#x}", regs.rip);
+        let instruction_ptr = regs.rip as usize;
+
+        if self.hashmap.contains_key(&(instruction_ptr - 1)) {
+            let address = instruction_ptr - 1;
+            self.write_byte(address, self.hashmap.get(&address).unwrap().orig_byte);
+            regs.rip = (instruction_ptr - 1) as u64;
+            ptrace::setregs(self.pid(), regs);
+            ptrace::step(self.pid(), None)?;
+            self.wait(None);
+            self.write_byte(address, 0xcc);
+        }
+
         ptrace::cont(self.pid(), None)?;
         self.wait(None)
     }

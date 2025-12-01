@@ -98,7 +98,7 @@ impl Debugger {
     }
 
     fn cont(&mut self) {
-        match self.inferior.as_ref().unwrap().cont() {
+        match self.inferior.as_mut().unwrap().cont() {
             Ok(status) => match status {
                 Status::Exited(exit_code) => {
                     println!("Child exited (status {})", exit_code);
