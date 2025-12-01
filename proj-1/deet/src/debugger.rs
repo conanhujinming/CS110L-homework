@@ -1,15 +1,16 @@
 use crate::debugger_command::DebuggerCommand;
+use crate::dwarf_data::{DwarfData, Error as DwarfError};
 use crate::inferior::{Inferior, Status};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
-use crate::dwarf_data::{DwarfData, Error as DwarfError};
 
 pub struct Debugger {
     target: String,
     history_path: String,
     readline: Editor<()>,
     inferior: Option<Inferior>,
-    debug_data: DwarfData
+    debug_data: DwarfData,
+    breakpoints: Vec<usize>
 }
 
 impl Debugger {
@@ -32,12 +33,15 @@ impl Debugger {
         // Attempt to load history from ~/.deet_history if it exists
         let _ = readline.load_history(&history_path);
 
+        debug_data.print();
+
         Debugger {
             target: target.to_string(),
             history_path,
             readline,
             inferior: None,
-            debug_data: debug_data
+            debug_data: debug_data,
+            breakpoints: vec![]
         }
     }
 
@@ -49,28 +53,11 @@ impl Debugger {
                         self.inferior.as_mut().unwrap().kill();
                     }
 
-                    if let Some(inferior) = Inferior::new(&self.target, &args) {
+                    if let Some(inferior) = Inferior::new(&self.target, &args, &self.breakpoints) {
                         // Create the inferior
                         self.inferior = Some(inferior);
                         // Make the inferior run
-                        match self.inferior.as_ref().unwrap().cont() {
-                            Ok(status) => match status {
-                                Status::Exited(exit_code) => {
-                                    println!("Child exited (status {})", exit_code);
-                                    self.inferior = None;
-                                }
-                                Status::Signaled(signal) => {
-                                    println!("Child killed by signal {:?}", signal);
-                                    self.inferior = None;
-                                }
-                                Status::Stopped(signal, rip) => {
-                                    println!("Child stopped (signal {:?}) at address {:#x}", signal, rip);
-                                }
-                            }
-                            Err(e) => {
-                                println!("Error continuing inferior: {}", e);
-                            }
-                        }
+                        self.cont();
                     } else {
                         println!("Error starting subprocess");
                     }
@@ -80,31 +67,17 @@ impl Debugger {
                         println!("Please run the process first");
                         continue;
                     }
-                    match self.inferior.as_ref().unwrap().cont() {
-                        Ok(status) => match status {
-                            Status::Exited(exit_code) => {
-                                println!("Child exited (status {})", exit_code);
-                                self.inferior = None;
-                            }
-                            Status::Signaled(signal) => {
-                                println!("Child killed by signal {:?}", signal);
-                                self.inferior = None;
-                            }
-                            Status::Stopped(signal, rip) => {
-                                println!("Child stopped (signal {:?}) at address {:#x}", signal, rip);
-                            }
-                        }
-                        Err(e) => {
-                            println!("Error continuing inferior: {}", e);
-                        }
-                    }
+                    self.cont();
                 }
                 DebuggerCommand::Backtrace => {
                     if !self.inferior.is_none() {
-                        self.inferior.as_mut().unwrap().print_backtrace(&self.debug_data).expect("Backtrace error");
+                        self.inferior
+                            .as_mut()
+                            .unwrap()
+                            .print_backtrace(&self.debug_data)
+                            .expect("Backtrace error");
                         continue;
-                    }
-                    else {
+                    } else {
                         println!("Please run the process first");
                         continue;
                     }
@@ -115,8 +88,49 @@ impl Debugger {
                     }
                     return;
                 }
+                DebuggerCommand::Break(args) => {
+                    let address = self.parse_address(args.as_str()).unwrap();
+                    println!("Set breakpoint {} at {}", self.breakpoints.len(), address);
+                    self.breakpoints.push(address);
+                }
             }
         }
+    }
+
+    fn cont(&mut self) {
+        match self.inferior.as_ref().unwrap().cont() {
+            Ok(status) => match status {
+                Status::Exited(exit_code) => {
+                    println!("Child exited (status {})", exit_code);
+                    self.inferior = None;
+                }
+                Status::Signaled(signal) => {
+                    println!("Child killed by signal {:?}", signal);
+                    self.inferior = None;
+                }
+                Status::Stopped(signal, rip) => {
+                    println!("Child stopped (signal {:?})", signal);
+                    let line = self.debug_data.get_line_from_addr(rip);
+                    println!(
+                        "Stopped at {}:{}",
+                        line.as_ref().unwrap().file,
+                        line.as_ref().unwrap().number
+                    );
+                }
+            },
+            Err(e) => {
+                println!("Error continuing inferior: {}", e);
+            }
+        }
+    }
+
+    fn parse_address(&self, addr: &str) -> Option<usize> {
+        let addr_without_0x = if addr.to_lowercase().starts_with("0x") {
+            &addr[2..]
+        } else {
+            &addr
+        };
+        usize::from_str_radix(addr_without_0x, 16).ok()
     }
 
     /// This function prompts the user to enter a command, and continues re-prompting until the user
